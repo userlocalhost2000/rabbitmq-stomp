@@ -189,11 +189,16 @@ test_blocked(Channel, Client, ClientConsumer, _Version) ->
         amqp_channel:call(Channel, #'queue.declare'{queue       = ?BLOCK_QUEUE
                                                     ,auto_delete = true}),
 
-    %% subscribe and wait for receipt
     rabbit_stomp_client:send(
       ClientConsumer, "SUBSCRIBE", [{"destination", ?BLOCK_DESTINATION}, 
                                     {"receipt", "block"}]),
     {ok, ClientConsumer1, _, _} = stomp_receive(ClientConsumer, "RECEIPT"),
+
+    rabbit_stomp_client:send(
+      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},
+                       {"receipt", "block0"}],
+                      ["Should not block"]),
+    {ok, _, _, _} = stomp_receive(Client, "RECEIPT"),
 
     vm_memory_monitor:set_vm_memory_high_watermark(0.00000001),
     rabbit_alarm:set_alarm({{resource_limit, memory, node()}, []}),
@@ -201,20 +206,18 @@ test_blocked(Channel, Client, ClientConsumer, _Version) ->
     %% Let it block
     timer:sleep(100),
 
-    %% send from stomp
     rabbit_stomp_client:send(
-      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},{"receipt", "block"}], ["hello"]),
-    Receipt = stomp_receive(Client, "RECEIPT"),
+      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},
+                       {"receipt", "block1"}],
+                      ["Not blocked"]),
+    {ok, _, _, _} = stomp_receive(Client, "RECEIPT"),
     
     rabbit_stomp_client:send(
-      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},{"receipt", "block1"}], ["hello1"]),
+      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},
+                       {"receipt", "block2"}],
+                      ["Blocked"]),
     {error, timeout} = rabbit_stomp_client:recv(Client),
-    
-    rabbit_stomp_client:send(
-      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},{"receipt", "block2"}], ["hello2"]),
-
-    {error, timeout} = rabbit_stomp_client:recv(Client),
-    
+        
     vm_memory_monitor:set_vm_memory_high_watermark(0.4),
     rabbit_alarm:clear_alarm({resource_limit, memory, node()}),
 
@@ -223,10 +226,13 @@ test_blocked(Channel, Client, ClientConsumer, _Version) ->
 
     % CLear receipts
     rabbit_stomp_client:recv(Client),
-
-    {ok, ClientConsumer2, _, [<<"hello">>]} = stomp_receive(ClientConsumer1, "MESSAGE"),
-    {ok, ClientConsumer3, _, [<<"hello1">>]} = stomp_receive(ClientConsumer2, "MESSAGE"),
-    {ok, _Client4, _, [<<"hello2">>]} = stomp_receive(ClientConsumer3, "MESSAGE"),
+    
+    {ok, ClientConsumer2, _, [<<"Should not block">>]} =
+        stomp_receive(ClientConsumer1, "MESSAGE"),
+    {ok, ClientConsumer2, _, [<<"Not blocked">>]} =
+        stomp_receive(ClientConsumer1, "MESSAGE"),
+    {ok, ClientConsumer3, _, [<<"Blocked">>]} =
+        stomp_receive(ClientConsumer2, "MESSAGE"),
 
     ok.
 
