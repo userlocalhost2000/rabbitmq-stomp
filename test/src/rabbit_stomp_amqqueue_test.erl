@@ -27,6 +27,9 @@
 -define(QUEUE, <<"TestQueue">>).
 -define(DESTINATION, "/amq/queue/TestQueue").
 
+-define(BLOCK_QUEUE, <<"BlockQueue">>).
+-define(BLOCK_DESTINATION, "/amq/queue/BlockQueue").
+
 all_tests() ->
     [[ok = run_test(TestFun, Version)
       || TestFun <- [fun test_subscribe_error/3,
@@ -45,6 +48,9 @@ run_test(TestFun, Version) ->
     {ok, Connection} = amqp_connection:start(#amqp_params_direct{}),
     {ok, Channel} = amqp_connection:open_channel(Connection),
     {ok, Client} = rabbit_stomp_client:connect(Version),
+
+    % Block test use isolated connections and channel.
+    test_blocked(Version),
 
     Result = (catch TestFun(Channel, Client, Version)),
 
@@ -162,6 +168,69 @@ test_send(Channel, Client, _Version) ->
     {ok, _Client2, _, [<<"hello">>]} = stomp_receive(Client1, "MESSAGE"),
     ok.
 
+
+test_blocked(Version) ->
+    {ok, Connection} = amqp_connection:start(#amqp_params_direct{}),
+    {ok, Channel} = amqp_connection:open_channel(Connection),
+    {ok, Client} = rabbit_stomp_client:connect(Version),
+    {ok, ClientConsumer} = rabbit_stomp_client:connect(Version),
+    Result = (catch test_blocked(Channel, Client, ClientConsumer, Version)),
+    vm_memory_monitor:set_vm_memory_high_watermark(0.4),
+    rabbit_alarm:clear_alarm({resource_limit, memory, node()}),
+    timer:sleep(200),
+    rabbit_stomp_client:disconnect(Client),
+    rabbit_stomp_client:disconnect(ClientConsumer),
+    amqp_channel:close(Channel),
+    amqp_connection:close(Connection),
+    Result.
+
+test_blocked(Channel, Client, ClientConsumer, _Version) ->
+    #'queue.declare_ok'{} =
+        amqp_channel:call(Channel, #'queue.declare'{queue       = ?BLOCK_QUEUE
+                                                    ,auto_delete = true}),
+
+    %% subscribe and wait for receipt
+    rabbit_stomp_client:send(
+      ClientConsumer, "SUBSCRIBE", [{"destination", ?BLOCK_DESTINATION}, 
+                                    {"receipt", "block"}]),
+    {ok, ClientConsumer1, _, _} = stomp_receive(ClientConsumer, "RECEIPT"),
+
+    vm_memory_monitor:set_vm_memory_high_watermark(0.00000001),
+    rabbit_alarm:set_alarm({{resource_limit, memory, node()}, []}),
+
+    %% Let it block
+    timer:sleep(100),
+
+    %% send from stomp
+    rabbit_stomp_client:send(
+      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},{"receipt", "block"}], ["hello"]),
+    Receipt = stomp_receive(Client, "RECEIPT"),
+    
+    rabbit_stomp_client:send(
+      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},{"receipt", "block1"}], ["hello1"]),
+    {error, timeout} = rabbit_stomp_client:recv(Client),
+    
+    rabbit_stomp_client:send(
+      Client, "SEND", [{"destination", ?BLOCK_DESTINATION},{"receipt", "block2"}], ["hello2"]),
+
+    {error, timeout} = rabbit_stomp_client:recv(Client),
+    
+    vm_memory_monitor:set_vm_memory_high_watermark(0.4),
+    rabbit_alarm:clear_alarm({resource_limit, memory, node()}),
+
+    % Clear alarm
+    timer:sleep(200),
+
+    % CLear receipts
+    rabbit_stomp_client:recv(Client),
+
+    {ok, ClientConsumer2, _, [<<"hello">>]} = stomp_receive(ClientConsumer1, "MESSAGE"),
+    {ok, ClientConsumer3, _, [<<"hello1">>]} = stomp_receive(ClientConsumer2, "MESSAGE"),
+    {ok, _Client4, _, [<<"hello2">>]} = stomp_receive(ClientConsumer3, "MESSAGE"),
+
+    ok.
+
+
 test_delete_queue_subscribe(Channel, Client, _Version) ->
     #'queue.declare_ok'{} =
         amqp_channel:call(Channel, #'queue.declare'{queue       = ?QUEUE,
@@ -220,6 +289,6 @@ stomp_receive(Client, Command) ->
     {#stomp_frame{command     = Command,
                   headers     = Hdrs,
                   body_iolist = Body},   Client1} =
-    rabbit_stomp_client:recv(Client),
+        rabbit_stomp_client:recv(Client),
     {ok, Client1, Hdrs, Body}.
 

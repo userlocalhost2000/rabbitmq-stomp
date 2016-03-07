@@ -70,8 +70,12 @@ recv({Sock, [Frame | Frames]}) ->
     {Frame, {Sock, Frames}}.
 
 recv(Client = {Sock, _}, FrameState, Length) ->
-    {ok, Payload} = gen_tcp:recv(Sock, Length, ?TIMEOUT),
-    parse(Payload, Client, FrameState, Length).
+    case gen_tcp:recv(Sock, Length, ?TIMEOUT) of
+        {ok, Payload} ->
+            parse(Payload, Client, FrameState, Length);
+        {error, timeout} ->
+            {error, timeout}
+    end.
 
 parse(Payload, Client = {Sock, FramesRev}, FrameState, Length) ->
     case rabbit_stomp_frame:parse(Payload, FrameState) of

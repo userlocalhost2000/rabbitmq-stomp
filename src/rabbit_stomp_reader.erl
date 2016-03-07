@@ -203,7 +203,7 @@ process_received_bytes(Bytes,
             {stop, normal, State}
     end.
 
-conserve_resources(Pid, _Source, Conserve) ->
+conserve_resources(Pid, _Source, {_, Conserve, _}) ->
     Pid ! {conserve_resources, Conserve},
     ok.
 
@@ -284,7 +284,11 @@ log_reason({shutdown, client_heartbeat_timeout},
                        "on connection ~s, closing it~n", [AdapterName]);
 
 log_reason(normal, #reader_state{ conn_name  = ConnName}) ->
-    log(info, "closing STOMP connection ~p (~s)~n", [self(), ConnName]).
+    log(info, "closing STOMP connection ~p (~s)~n", [self(), ConnName]);
+
+log_reason(Other,  #reader_state{ conn_name  = ConnName}) ->
+    log(error, "closing STOMP connection ~p (~s) Unexpected error ~p ~n", 
+        [self(), ConnName, Other]).
 
 
 %%----------------------------------------------------------------------------
